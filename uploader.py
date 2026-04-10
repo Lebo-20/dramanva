@@ -80,13 +80,13 @@ class Uploader:
         # Generate thumbnail
         thumb_path = None
         try:
-            thumb_path = generate_thumbnail(file_path)
+            thumb_path = await generate_thumbnail(file_path)
             log.info(f"🖼️  Thumbnail generated: {thumb_path}")
         except Exception as e:
             log.warning(f"⚠️  Thumbnail generation failed: {e}")
 
         # Get video duration
-        duration = int(get_video_duration(file_path))
+        duration = int(await get_video_duration(file_path))
 
         # Build video attributes
         attributes = [

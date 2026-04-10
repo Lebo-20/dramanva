@@ -146,7 +146,7 @@ async def process_drama(drama_id: str, event=None) -> bool:
             # ─── Step 5: Merge (HARDSUB WAJIB) ──────────────
             await update_status(info_header + "🎬 **Merging & Hardsubbing...**\n(Proses ini cukup lama)", force=True)
             
-            final_path = merge_all_episodes(downloaded, title)
+            final_path = await merge_all_episodes(downloaded, title)
 
             # ─── Step 6: Upload ──────────────────────────────
             uploader = Uploader(client)
