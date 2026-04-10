@@ -144,7 +144,8 @@ async def merge_all_episodes(
     concat_list = os.path.join(TEMP_DIR, f"{safe_title}_concat.txt")
     with open(concat_list, "w", encoding="utf-8") as f:
         for fp in hardsubbed_files:
-            f.write(f"file '{fp.replace('\\', '/')}'\n")
+            safe_fp = fp.replace('\\', '/')
+            f.write(f"file '{safe_fp}'\n")
 
     final_output = os.path.join(output_dir, f"{safe_title}_final.mp4")
     cmd = ["ffmpeg", "-y", "-f", "concat", "-safe", "0", "-i", concat_list, "-c", "copy", final_output]
