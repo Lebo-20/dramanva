@@ -25,24 +25,18 @@ class DramaNovaAPI:
 
     async def _get_client(self) -> httpx.AsyncClient:
         if self._client is None or self._client.is_closed:
-            # We import here to avoid circular imports if any
-            from config import DRAMANOVA_TOKEN
-            
+            # Simple headers to match the curl example provided
             headers = {
-                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-                "Accept": "application/json, text/plain, */*",
-                "Referer": "https://api.sansekai.my.id/",
-                "Origin": "https://api.sansekai.my.id",
+                "User-Agent": "curl/7.81.0",
+                "Accept": "*/*",
+                "Host": "api.sansekai.my.id"
             }
             
-            # If the user still has a token in .env, try using it
-            if DRAMANOVA_TOKEN:
-                headers["Authorization"] = f"Bearer {DRAMANOVA_TOKEN}"
-
             self._client = httpx.AsyncClient(
                 timeout=30.0,
                 follow_redirects=True,
-                headers=headers
+                headers=headers,
+                http2=False # Force HTTP/1.1 (often bypasses simple bot detection)
             )
         return self._client
 
