@@ -9,7 +9,6 @@ load_dotenv()
 
 # ─── DramaNova API (sansekai) ────────────────────────────────
 BASE_URL = "https://api.sansekai.my.id/api/dramanova"
-DRAMANOVA_TOKEN = os.getenv("DRAMANOVA_TOKEN", "")
 
 # ─── Telegram ────────────────────────────────────────────────
 API_ID = int(os.getenv("API_ID", "0"))
