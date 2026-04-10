@@ -73,19 +73,24 @@ async def process_drama(drama_id: str, event=None) -> bool:
             return False
 
         # ─── Setup Admin Notification ────────────────────────
-        # If manual (/download), use the reply. If auto, find admin.
         status_msg = None
         target_chat = event.chat_id if event else ADMIN_IDS[0] if ADMIN_IDS else None
+        last_update = 0
 
         if target_chat:
             status_msg = await client.send_message(target_chat, f"⏳ Memulai proses: ID `{drama_id}`")
 
-        async def update_status(text: str):
+        async def update_status(text: str, force: bool = False):
+            nonlocal last_update
             if status_msg:
-                try:
-                    await status_msg.edit(text)
-                except Exception:
-                    pass
+                now = time.time()
+                # Throttle updates to 1.5s to avoid Telegram flood limits
+                if force or (now - last_update) > 1.5:
+                    try:
+                        await status_msg.edit(text)
+                        last_update = now
+                    except Exception:
+                        pass
 
         try:
             # ─── Step 1-2: Fetch detail ──────────────────────
@@ -93,10 +98,6 @@ async def process_drama(drama_id: str, event=None) -> bool:
             detail = await api.get_detail(drama_id)
             drama_info = api.extract_drama_info(detail)
             title = drama_info["title"]
-            synopsis = drama_info["synopsis"][:150] + "..." if len(drama_info["synopsis"]) > 150 else drama_info["synopsis"]
-
-            episodes_raw = detail.get("episodes", [])
-            episodes = [api.extract_episode_info(ep) for ep in episodes_raw]
             
             # Formatted Header for all updates
             info_header = (
@@ -110,7 +111,7 @@ async def process_drama(drama_id: str, event=None) -> bool:
             if not episodes:
                 msg = f"❌ Tidak ada episode ditemukan."
                 log.error(msg)
-                await update_status(info_header + msg)
+                await update_status(info_header + msg, force=True)
                 return False
 
             # ─── Step 3-4: Download + Subtitle Check ─────────
@@ -118,12 +119,11 @@ async def process_drama(drama_id: str, event=None) -> bool:
 
             if not episodes_with_subs:
                 msg = f"❌ Subtitle tidak tersedia (Hardsub wajib) -> SKIP"
-                log.error(msg)
-                await update_status(info_header + msg)
+                await update_status(info_header + msg, force=True)
                 return False
 
             total_eps = len(episodes_with_subs)
-            await update_status(info_header + f"⬇️ Memulai download {total_eps} eps...")
+            await update_status(info_header + f"⬇️ Memulai download {total_eps} eps...", force=True)
 
             # Progress callback for downloader
             async def dl_progress(current_ep, ep_pct):
@@ -140,12 +140,11 @@ async def process_drama(drama_id: str, event=None) -> bool:
 
             if not downloaded:
                 msg = f"❌ Semua download gagal."
-                log.error(msg)
-                await update_status(info_header + msg)
+                await update_status(info_header + msg, force=True)
                 return False
 
             # ─── Step 5: Merge (HARDSUB WAJIB) ──────────────
-            await update_status(info_header + "🎬 **Merging & Hardsubbing...**\n(Proses ini memakan waktu cukup lama)")
+            await update_status(info_header + "🎬 **Merging & Hardsubbing...**\n(Proses ini cukup lama)", force=True)
             
             final_path = merge_all_episodes(downloaded, title)
 
@@ -153,7 +152,7 @@ async def process_drama(drama_id: str, event=None) -> bool:
             uploader = Uploader(client)
             
             # Send details message first (Poster + Synopsis)
-            await update_status(info_header + "📤 **Mengirim Detail & Poster...**")
+            await update_status(info_header + "📤 **Mengirim Detail & Poster...**", force=True)
             await uploader.send_details(drama_info)
 
             # Then upload the video
@@ -165,20 +164,17 @@ async def process_drama(drama_id: str, event=None) -> bool:
                     f"📊 Progress: `{pct:.1f}%`"
                 )
 
-            await update_status(info_header + "📤 **Memulai Upload Video...**")
+            await update_status(info_header + "📤 **Memulai Upload Video...**", force=True)
             await uploader.upload_video(final_path, drama_title=title, progress_callback=ul_progress)
 
             # ─── Step 7: Cleanup ─────────────────────────────
             cleanup(title)
             processed_ids.add(drama_id)
 
-            # Success message matching the screenshot
+            # Success message matching the screenshot - EDIT DI TEMPAT
             msg = f"✅ **Sukses Auto-Post: {title}**"
             log.info(msg)
-            
-            # Send as a new message to match the screenshot flow
-            if target_chat:
-                await client.send_message(target_chat, msg)
+            await update_status(msg, force=True)
                 
             return True
 
