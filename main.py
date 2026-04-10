@@ -365,18 +365,36 @@ async def cmd_update(event):
     if not is_admin(event.sender_id):
         return
 
-    msg = await event.reply("Updating bot...")
+    msg = await event.reply("🔄 **Checking for updates via git pull...**")
     try:
+        # Run git pull
         result = subprocess.run(
             ["git", "pull"],
             capture_output=True,
             text=True,
             cwd=os.path.dirname(__file__),
         )
-        output = result.stdout.strip() or result.stderr.strip() or "No output"
-        await msg.edit(f"Update done:\n```\n{output}\n```")
+        
+        output = result.stdout.strip()
+        error = result.stderr.strip()
+        
+        if "Already up to date" in output:
+            await msg.edit("✅ **Bot is already up to date!**")
+            return
+
+        # If updated successfully
+        await msg.edit(f"✅ **Update success!**\n\n```\n{output}\n```\n\n🔄 **Bot is restarting to apply changes...**")
+        
+        # Give a small delay for the message to be sent
+        await asyncio.sleep(2)
+        
+        # RESTART BOT
+        log.info("Restarting bot after update...")
+        os.execv(sys.executable, [sys.executable] + sys.argv)
+
     except Exception as e:
-        await msg.edit(f"Update failed: {e}")
+        log.error(f"Update error: {e}")
+        await msg.edit(f"❌ **Update failed:**\n`{e}`")
 
 
 # =====================================================================
