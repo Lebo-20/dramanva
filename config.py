@@ -8,7 +8,9 @@ from dotenv import load_dotenv
 load_dotenv()
 
 # ─── DramaNova API (sansekai) ────────────────────────────────
-BASE_URL = "https://api.sansekai.my.id/api/dramanova"
+PROXY_MODE = os.getenv("PROXY_MODE", "false").lower() == "true"
+PROXY_URL = os.getenv("PROXY_URL", "http://localhost:3200")
+BASE_URL = PROXY_URL if PROXY_MODE else "https://api.sansekai.my.id/api/dramanova"
 
 # ─── Telegram ────────────────────────────────────────────────
 API_ID = int(os.getenv("API_ID", "0"))
