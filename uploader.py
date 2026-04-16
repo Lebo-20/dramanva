@@ -7,7 +7,7 @@ import time
 import logging
 from telethon import TelegramClient
 from telethon.tl.types import DocumentAttributeVideo
-from config import CHANNEL_ID
+from config import CHANNEL_ID, TOPIC_ID
 from merge import generate_thumbnail, get_video_duration
 
 log = logging.getLogger("dramanova.uploader")
@@ -35,6 +35,7 @@ class Uploader:
         self,
         drama_info: dict,
         channel_id: int = CHANNEL_ID,
+        topic_id: int = TOPIC_ID,
     ) -> None:
         """Send the poster image with title and synopsis."""
         poster_url = drama_info.get("cover")
@@ -51,17 +52,18 @@ class Uploader:
             caption = caption[:1021] + "..."
 
         try:
-            log.info(f"🖼️  Sending details for: {title}")
+            log.info(f"\U0001f5bc  Sending details for: {title}")
             await self.client.send_file(
                 entity=channel_id,
                 file=poster_url,
                 caption=caption,
-                parse_mode="html"
+                parse_mode="html",
+                reply_to=topic_id if topic_id else None
             )
         except Exception as e:
-            log.error(f"❌ Gagal mengirim detail: {e}")
+            log.error(f"\u274c Gagal mengirim detail: {e}")
             # If photo fails, send as text
-            await self.client.send_message(channel_id, caption, parse_mode="html")
+            await self.client.send_message(channel_id, caption, parse_mode="html", reply_to=topic_id if topic_id else None)
 
     # ─── 2. Upload Video (Video + Simple Caption) ──────────
     async def upload_video(
@@ -69,6 +71,7 @@ class Uploader:
         file_path: str,
         drama_title: str,
         channel_id: int = CHANNEL_ID,
+        topic_id: int = TOPIC_ID,
         progress_callback=None,
     ) -> None:
         """
@@ -120,6 +123,7 @@ class Uploader:
                 supports_streaming=True,
                 progress_callback=_progress,
                 parse_mode="html",
+                reply_to=topic_id if topic_id else None
             )
             elapsed = time.time() - start
             log.info(f"✅ Upload selesai dalam {elapsed:.1f}s")

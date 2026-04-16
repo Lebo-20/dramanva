@@ -7,16 +7,16 @@ from dotenv import load_dotenv
 
 load_dotenv()
 
-# ─── DramaNova API (sansekai) ────────────────────────────────
-PROXY_MODE = os.getenv("PROXY_MODE", "false").lower() == "true"
-PROXY_URL = os.getenv("PROXY_URL", "http://localhost:3200")
-BASE_URL = PROXY_URL if PROXY_MODE else "https://api.sansekai.my.id/api/dramanova"
+# ─── DramaNova API (sapimu.au) ───────────────────────────────
+BASE_URL = os.getenv("BASE_URL", "https://captain.sapimu.au/dramanova")
+API_TOKEN = os.getenv("API_TOKEN", "")
 
 # ─── Telegram ────────────────────────────────────────────────
 API_ID = int(os.getenv("API_ID", "0"))
 API_HASH = os.getenv("API_HASH", "")
 BOT_TOKEN = os.getenv("BOT_TOKEN", "")
 CHANNEL_ID = int(os.getenv("AUTO_CHANNEL", "0"))
+TOPIC_ID = int(os.getenv("TOPIC_ID", "0"))
 ADMIN_IDS = [int(x) for x in os.getenv("ADMIN_ID", "0").split(",") if x.strip()]
 
 # ─── Paths ───────────────────────────────────────────────────
@@ -28,8 +28,8 @@ for d in [DOWNLOAD_DIR, MERGE_DIR, TEMP_DIR]:
     os.makedirs(d, exist_ok=True)
 
 # ─── FFmpeg Encoding (LOCKED 🔒) ────────────────────────────
-CRF = 23
-PRESET = "ultrafast"
+CRF = 26
+PRESET = "faster"
 VIDEO_CODEC = "libx264"
 AUDIO_CODEC = "copy"
 

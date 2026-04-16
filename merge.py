@@ -40,20 +40,25 @@ def validate_subtitle(subtitle_file: str) -> None:
 
 
 def get_subtitle_filter(sub_path: str) -> str:
+    # On Windows, FFmpeg subtitles filter needs specific escaping:
+    # 1. Backslashes must be forward slashes or escaped.
+    # 2. Colons in drive letters (C:) must be escaped (C\:).
+    # 3. The entire path must be wrapped in single quotes.
     escaped = sub_path.replace("\\", "/").replace(":", "\\:")
-    if sub_path.endswith(".ass"):
+    
+    if sub_path.lower().endswith(".ass"):
         return f"ass='{escaped}'"
-    elif sub_path.endswith(".srt"):
-        return (
-            f"subtitles='{escaped}':force_style='"
+    elif sub_path.lower().endswith((".srt", ".vtt")):
+        style = (
             f"FontName={SUB_FONT},"
             f"FontSize={SUB_SIZE},"
             f"PrimaryColour={SUB_COLOR},"
             f"Bold={SUB_BOLD},"
             f"Outline={SUB_OUTLINE},"
             f"OutlineColour={SUB_OUTLINE_COLOR},"
-            f"MarginV={SUB_MARGIN_V}'"
+            f"MarginV={SUB_MARGIN_V}"
         )
+        return f"subtitles='{escaped}':force_style='{style}'"
     else:
         raise Exception(f"❌ Format subtitle tidak didukung: {sub_path}")
 
@@ -62,11 +67,19 @@ def get_subtitle_filter(sub_path: str) -> str:
 # 🎬 SINGLE VIDEO + HARDSUB (ASYNC)
 # ═══════════════════════════════════════════════════════════════
 
-async def merge_video(input_file: str, subtitle_file: str, output_file: str) -> str:
-    """Async merge using subprocess."""
+async def merge_video(
+    input_file: str, 
+    subtitle_file: str, 
+    output_file: str,
+    progress_callback=None
+) -> str:
+    """Async merge using subprocess with progress parsing."""
     validate_subtitle(subtitle_file)
     os.makedirs(os.path.dirname(output_file), exist_ok=True)
     sub_filter = get_subtitle_filter(subtitle_file)
+
+    # Get duration for progress calculation
+    duration = await get_video_duration(input_file)
 
     cmd = [
         "ffmpeg", "-y",
@@ -76,22 +89,53 @@ async def merge_video(input_file: str, subtitle_file: str, output_file: str) -> 
         "-preset", PRESET,
         "-crf", str(CRF),
         "-c:a", AUDIO_CODEC,
+        "-stats",  # Force stats output
         output_file,
     ]
 
     log.info(f"🎬 Merging: {os.path.basename(input_file)}...")
     
-    process = await asyncio.create_subprocess_exec(
-        *cmd,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE
-    )
+    try:
+        process = await asyncio.create_subprocess_exec(
+            *cmd,
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE
+        )
 
-    stdout, stderr = await process.communicate()
+        import re
+        # Example stats line: time=00:00:10.50
+        time_regex = re.compile(r"time=(\d+):(\d+):(\d+\.\d+)")
 
-    if process.returncode != 0:
-        log.error(f"❌ FFmpeg error: {stderr.decode()}")
-        raise Exception(f"FFmpeg merge failed (code {process.returncode})")
+        async def read_stderr(stream):
+            while True:
+                line = await stream.readline()
+                if not line: break
+                line_str = line.decode('utf-8', errors='ignore')
+                
+                # Look for progress
+                match = time_regex.search(line_str)
+                if match and duration > 0:
+                    h, m, s = map(float, match.groups())
+                    current_time = h * 3600 + m * 60 + s
+                    pct = min(100.0, (current_time / duration) * 100)
+                    if progress_callback:
+                        await progress_callback(pct)
+
+        # Read stderr in background
+        stderr_task = asyncio.create_task(read_stderr(process.stderr))
+        await process.wait()
+        await stderr_task
+
+        if process.returncode != 0:
+            log.error(f"❌ FFmpeg FAIL for {os.path.basename(input_file)}")
+            raise Exception(f"FFmpeg failed with code {process.returncode}")
+            
+    except FileNotFoundError:
+        log.error("❌ FFmpeg not found!")
+        raise Exception("FFmpeg command not found.")
+    except Exception as e:
+        log.error(f"❌ Merge exception: {type(e).__name__} - {e}")
+        raise
 
     return output_file
 
@@ -104,8 +148,9 @@ async def merge_all_episodes(
     episodes: list[dict],
     drama_title: str,
     output_dir: str = MERGE_DIR,
+    progress_callback=None,
 ) -> str:
-    """Batch process all episodes asynchronously."""
+    """Batch process all episodes asynchronously with progress."""
     if not episodes:
         raise Exception("❌ Tidak ada episode untuk diproses!")
 
@@ -123,7 +168,12 @@ async def merge_all_episodes(
         temp_out = os.path.join(TEMP_DIR, f"{safe_title}_ep{ep_num:03d}_hardsub.mp4")
 
         try:
-            await merge_video(video, sub, temp_out)
+            # Wrap progress callback for specific episode
+            async def _ep_progress(pct):
+                if progress_callback:
+                    await progress_callback(ep_num, pct)
+
+            await merge_video(video, sub, temp_out, progress_callback=_ep_progress)
             hardsubbed_files.append(temp_out)
         except Exception as e:
             log.error(f"❌ Episode {ep_num} merge gagal: {e}")

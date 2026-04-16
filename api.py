@@ -12,7 +12,7 @@ import httpx
 import logging
 import asyncio
 from typing import Optional
-from config import BASE_URL
+from config import BASE_URL, API_TOKEN
 
 log = logging.getLogger("dramanova.api")
 
@@ -28,14 +28,7 @@ class DramaNovaAPI:
             "Accept": "application/json, text/plain, */*",
             "Accept-Language": "en-US,en;q=0.9,id;q=0.8",
             "Accept-Encoding": "gzip, deflate, br",
-            "Referer": "https://api.sansekai.my.id/",
-            "Origin": "https://api.sansekai.my.id",
-            "Sec-Ch-Ua": '"Not_A Brand";v="8", "Chromium";v="120", "Google Chrome";v="120"',
-            "Sec-Ch-Ua-Mobile": "?0",
-            "Sec-Ch-Ua-Platform": '"Windows"',
-            "Sec-Fetch-Dest": "empty",
-            "Sec-Fetch-Mode": "cors",
-            "Sec-Fetch-Site": "same-origin",
+            "Authorization": f"Bearer {API_TOKEN}",
             "Connection": "keep-alive",
             "DNT": "1",
             "Upgrade-Insecure-Requests": "1"
@@ -89,41 +82,40 @@ class DramaNovaAPI:
 
     async def get_home(self, page: int = 1) -> list:
         """Get homepage drama list (Latest)."""
-        data = await self._get("/home", params={"page": page})
+        data = await self._get("/api/v1/dramas", params={"page": page, "size": 20, "lang": "in"})
         return data.get("rows", [])
 
     async def get_drama18(self, page: int = 1) -> list:
         """Get drama 18+ list."""
-        data = await self._get("/drama18", params={"page": page})
+        data = await self._get("/api/v1/dramas", params={"page": page, "size": 20, "lang": "in"})
         return data.get("rows", [])
 
     async def search(self, query: str) -> list:
         """Search dramas by title."""
-        data = await self._get("/search", params={"query": query})
+        data = await self._get("/api/v1/search", params={"q": query, "lang": "in"})
         return data.get("rows", [])
 
     async def get_detail(self, drama_id: str) -> dict:
         """Get full drama detail (Episodes + Subtitles)."""
-        data = await self._get("/detail", params={"dramaId": drama_id})
+        data = await self._get(f"/api/v1/drama/{drama_id}", params={"lang": "in"})
         return data.get("data", data)
 
     async def get_video_url(self, file_id: str) -> str:
         """Resolve fileId → direct MP4 download URL."""
-        data = await self._get("/getvideo", params={"fileId": file_id})
-        result = data.get("Result", data)
-        play_list = result.get("PlayInfoList", [])
+        data = await self._get("/api/video", params={"id": file_id})
+        videos = data.get("videos", [])
 
-        if not play_list:
-            raise Exception(f"No PlayInfoList for fileId={file_id}")
+        if not videos:
+            raise Exception(f"No videos for fileId={file_id}")
 
         # Favor 720p
-        chosen = play_list[0]
-        for item in play_list:
-            if item.get("Definition") == "720p":
+        chosen = videos[0]
+        for item in videos:
+            if item.get("definition") == "720p":
                 chosen = item
                 break
 
-        url = chosen.get("MainPlayUrl") or chosen.get("BackupPlayUrl", "")
+        url = chosen.get("main_url") or chosen.get("backup_url", "")
         if not url:
             raise Exception(f"No play URL found for fileId={file_id}")
 
@@ -134,32 +126,32 @@ class DramaNovaAPI:
     @staticmethod
     def extract_drama_info(drama: dict) -> dict:
         return {
-            "id": drama.get("dramaId", ""),
+            "id": str(drama.get("id", "")),
             "title": drama.get("title", "Unknown"),
-            "cover": drama.get("posterImg") or drama.get("posterImgUrl", ""),
-            "synopsis": drama.get("synopsis") or drama.get("description", ""),
+            "cover": drama.get("cover", ""),
+            "synopsis": drama.get("description", ""),
             "total_episodes": drama.get("totalEpisodes", 0),
-            "is_completed": str(drama.get("isCompleted")) == "1",
+            "is_completed": drama.get("isCompleted") is True,
             "view_count": drama.get("viewCount", 0),
         }
 
     @staticmethod
     def extract_episode_info(episode: dict) -> dict:
         subtitle_url = ""
-        tracks = episode.get("subtitleTracks", [])
+        tracks = episode.get("subtitles", [])
         # Indonesian preference
         for track in tracks:
-            if track.get("language") == "in":
-                subtitle_url = track.get("label", "") or track.get("url", "")
+            if track.get("lang") == "in":
+                subtitle_url = track.get("url", "")
                 break
         if not subtitle_url and tracks:
-            subtitle_url = tracks[0].get("label", "") or tracks[0].get("url", "")
+            subtitle_url = tracks[0].get("url", "")
 
         return {
-            "id": episode.get("id", ""),
-            "number": episode.get("episodeNumber", 0),
-            "title": episode.get("episodeTitle", ""),
+            "id": str(episode.get("id", "")),
+            "number": episode.get("number", 0),
+            "title": episode.get("title", ""),
             "file_id": episode.get("fileId", ""),
             "subtitle": subtitle_url,
-            "duration": episode.get("previewDuration", 0),
+            "duration": episode.get("duration", 0),
         }

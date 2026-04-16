@@ -15,16 +15,21 @@ import os
 import sys
 import asyncio
 import logging
+import json
 import shutil
 import subprocess
+import time
 
 from telethon import TelegramClient, events
 
 from config import (
+    BASE_URL,
+    API_TOKEN,
     API_ID,
     API_HASH,
     BOT_TOKEN,
     CHANNEL_ID,
+    TOPIC_ID,
     ADMIN_IDS,
     DOWNLOAD_DIR,
     MERGE_DIR,
@@ -47,14 +52,39 @@ log = logging.getLogger("dramanova.main")
 
 # ─── Fix Windows asyncio ────────────────────────────────────
 if sys.platform == "win32":
-    asyncio.set_event_loop_policy(asyncio.WindowsSelectorEventLoopPolicy())
+    asyncio.set_event_loop_policy(asyncio.WindowsProactorEventLoopPolicy())
 
 # ─── Globals ─────────────────────────────────────────────────
 client = TelegramClient("dramanova_bot", API_ID, API_HASH)
 api = DramaNovaAPI()
 downloader = Downloader(api)
-processing_lock = asyncio.Lock()
+uploader = Uploader(client)
+
+# Permanent Queue & History Tracking
+PROCESSED_FILE = "processed.json"
 processed_ids: set[str] = set()
+processing_lock = asyncio.Lock()
+
+def load_processed():
+    global processed_ids
+    if os.path.exists(PROCESSED_FILE):
+        try:
+            with open(PROCESSED_FILE, "r") as f:
+                data = json.load(f)
+                processed_ids = set(data)
+                log.info(f"📜 Loaded {len(processed_ids)} processed dramas from history.")
+        except Exception as e:
+            log.warning(f"⚠️ Failed to load processed.json: {e}")
+
+def save_processed():
+    try:
+        with open(PROCESSED_FILE, "w") as f:
+            json.dump(list(processed_ids), f)
+    except Exception as e:
+        log.error(f"❌ Failed to save processed.json: {e}")
+
+# Call load at startup
+load_processed()
 auto_mode_active: bool = AUTO_MODE_ENABLED
 auto_task: asyncio.Task | None = None
 
@@ -72,25 +102,32 @@ async def process_drama(drama_id: str, event=None) -> bool:
         if drama_id in processed_ids:
             return False
 
-        # ─── Setup Admin Notification ────────────────────────
+        # ─── Setup Progress Tracking ─────────────────────────
         status_msg = None
         target_chat = event.chat_id if event else ADMIN_IDS[0] if ADMIN_IDS else None
         last_update = 0
+        
+        # Consistent Status Header
+        header = f"🚀 **DramaNova Processing**\n🆔 `{drama_id}`\n────────────────────\n"
 
         if target_chat:
-            status_msg = await client.send_message(target_chat, f"⏳ Memulai proses: ID `{drama_id}`")
+            status_msg = await client.send_message(target_chat, header + "⌛ Inisialisasi...")
 
         async def update_status(text: str, force: bool = False):
             nonlocal last_update
-            if status_msg:
-                now = time.time()
-                # Throttle updates to 1.5s to avoid Telegram flood limits
-                if force or (now - last_update) > 1.5:
-                    try:
-                        await status_msg.edit(text)
-                        last_update = now
-                    except Exception:
-                        pass
+            if not status_msg: return
+            
+            now = time.time()
+            # Throttle to 1.5s to avoid flood, unless forced (e.g. final result)
+            if force or (now - last_update) >= 1.5:
+                try:
+                    # Prepend header if not already there
+                    full_text = text if text.startswith("🚀") else header + text
+                    await status_msg.edit(full_text)
+                    last_update = now
+                except Exception as e:
+                    log.debug(f"Update status failed: {e}")
+                    pass
 
         try:
             # ─── Step 1-2: Fetch detail ──────────────────────
@@ -98,6 +135,10 @@ async def process_drama(drama_id: str, event=None) -> bool:
             detail = await api.get_detail(drama_id)
             drama_info = api.extract_drama_info(detail)
             title = drama_info["title"]
+            
+            # Map episodes correctly using extract_episode_info
+            raw_eps = detail.get("episodes", [])
+            episodes = [api.extract_episode_info(ep) for ep in raw_eps]
             
             # Formatted Header for all updates
             info_header = (
@@ -146,10 +187,17 @@ async def process_drama(drama_id: str, event=None) -> bool:
             # ─── Step 5: Merge (HARDSUB WAJIB) ──────────────
             await update_status(info_header + "🎬 **Merging & Hardsubbing...**\n(Proses ini cukup lama)", force=True)
             
-            final_path = await merge_all_episodes(downloaded, title)
+            async def merge_progress(ep_num, pct):
+                await update_status(
+                    f"{info_header}"
+                    f"🎬 **Merging & Hardsubbing...**\n"
+                    f"📦 Episode: {ep_num}/{total_eps}\n"
+                    f"📊 Progress: `{pct:.1f}%`"
+                )
+
+            final_path = await merge_all_episodes(downloaded, title, progress_callback=merge_progress)
 
             # ─── Step 6: Upload ──────────────────────────────
-            uploader = Uploader(client)
             
             # Send details message first (Poster + Synopsis)
             await update_status(info_header + "📤 **Mengirim Detail & Poster...**", force=True)
@@ -167,46 +215,59 @@ async def process_drama(drama_id: str, event=None) -> bool:
             await update_status(info_header + "📤 **Memulai Upload Video...**", force=True)
             await uploader.upload_video(final_path, drama_title=title, progress_callback=ul_progress)
 
-            # ─── Step 7: Cleanup ─────────────────────────────
-            cleanup(title)
+            # ─── Step 6: Cleanup & Store ─────────────────────
+            await update_status(info_header + "✅ **Selesai!** Membersihkan folder...", force=True)
+            safe_title = "".join(c if c.isalnum() or c in "._- " else "_" for c in title).strip()
+            if os.path.exists(os.path.join(DOWNLOAD_DIR, safe_title)):
+                shutil.rmtree(os.path.join(DOWNLOAD_DIR, safe_title))
+            
             processed_ids.add(drama_id)
-
-            # Success message matching the screenshot - EDIT DI TEMPAT
-            msg = f"✅ **Sukses Auto-Post: {title}**"
-            log.info(msg)
-            await update_status(msg, force=True)
-                
+            save_processed()
+            log.info(f"✅ Full Process Done: {title}")
             return True
 
         except Exception as e:
-            msg = f"❌ Error: {title if 'title' in locals() else drama_id}\n`{e}`"
-            log.error(msg, exc_info=True)
-            await update_status(msg)
+            msg = f"❌ **Error Encountered!**\n🎬 `{title if 'title' in locals() else drama_id}`\n────────────────────\n⚠️ **Reason:** `{str(e)}`"
+            log.error(f"Process failed: {e}", exc_info=True)
+            await update_status(msg, force=True)
             return False
 
+        finally:
+            # ─── Step 7: Final Cleanup (ALWAYS RUN) ─────────
+            try:
+                log.info(f"🧹 Cleaning up after title: {drama_id}")
+                safe_title = "".join(c if c.isalnum() or c in "._- " else "_" for c in (title if 'title' in locals() else "")).strip()
+                
+                # Remove download folder
+                if safe_title:
+                    dl_path = os.path.join(DOWNLOAD_DIR, safe_title)
+                    if os.path.exists(dl_path): shutil.rmtree(dl_path, ignore_errors=True)
+                
+                # Remove merged files
+                if safe_title:
+                    m_path = os.path.join(MERGE_DIR, f"{safe_title}_final.mp4")
+                    if os.path.exists(m_path): os.remove(m_path)
+                    
+                # Clean temp directory completely
+                for f in os.listdir(TEMP_DIR):
+                    if safe_title and safe_title in f:
+                        os.remove(os.path.join(TEMP_DIR, f))
+            except Exception as cleanup_err:
+                log.debug(f"Cleanup error (ignored): {cleanup_err}")
 
-# =====================================================================
-# CLEANUP
-# =====================================================================
 
-def cleanup(drama_title: str = None):
-    """Remove all temporary files."""
-    safe_title = "".join(c if c.isalnum() or c in "._- " else "_" for c in (drama_title or "")).strip()
-
-    dirs_to_clean = [TEMP_DIR]
-    if safe_title:
-        dirs_to_clean.append(os.path.join(DOWNLOAD_DIR, safe_title))
-
-    for d in dirs_to_clean:
+def global_cleanup():
+    """Wipe all temporary directories on startup."""
+    log.info("🧹 Performing global startup cleanup...")
+    for d in [DOWNLOAD_DIR, MERGE_DIR, TEMP_DIR]:
         if os.path.exists(d):
-            shutil.rmtree(d, ignore_errors=True)
-            log.info(f"Cleaned: {d}")
-
-    if safe_title:
-        merged_file = os.path.join(MERGE_DIR, f"{safe_title}_final.mp4")
-        if os.path.exists(merged_file):
-            os.remove(merged_file)
-
+            try:
+                # Close any potential open files or Give OS a second to release locks
+                shutil.rmtree(d, ignore_errors=True)
+                os.makedirs(d, exist_ok=True)
+                log.info(f"✨ Wiped: {os.path.basename(d)}")
+            except Exception as e:
+                log.warning(f"⚠️ Startup cleanup warning for {d}: {e}")
 
 # =====================================================================
 # AUTO MODE
@@ -222,16 +283,21 @@ async def auto_mode_loop():
             dramas = await api.get_home(page=1)
 
             if isinstance(dramas, list):
-                for drama in dramas:
+                # Filter out already processed dramas
+                new_dramas = [d for d in dramas if str(d.get("id")) not in processed_ids]
+                
+                if new_dramas:
+                    log.info(f"Found {len(new_dramas)} new dramas in scan.")
+                
+                for drama in new_dramas:
                     if not auto_mode_active:
                         break
-                    info = api.extract_drama_info(drama)
-                    drama_id = str(info["id"])
+                    
+                    drama_id = str(drama.get("id"))
+                    title = drama.get("title", "Unknown")
 
-                    if drama_id in processed_ids or not drama_id:
-                        continue
-
-                    log.info(f"New drama found: {info['title']} ({drama_id})")
+                    log.info(f"⏳ Drama '{title}' entering queue...")
+                    # The following line will block until previous process finishes
                     await process_drama(drama_id)
 
         except Exception as e:
@@ -403,6 +469,9 @@ async def cmd_update(event):
 
 async def main():
     global auto_task
+    # Perform initial global cleanup
+    global_cleanup()
+    
     log.info("Starting DramaNova Bot...")
 
     await client.start(bot_token=BOT_TOKEN)
